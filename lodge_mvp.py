@@ -3,116 +3,171 @@ import sqlite3
 from datetime import datetime
 import os
 
-conn = sqlite3.connect('lodge_mvp.db', check_same_thread=False)
+# ------------------ DB Setup ------------------
+conn = sqlite3.connect('lodge_mvp.db')
 c = conn.cursor()
 
-c.execute('''CREATE TABLE IF NOT EXISTS guests (
+# Guest register table
+c.execute('''
+CREATE TABLE IF NOT EXISTS guests (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT, phone TEXT, id_type TEXT, id_number TEXT,
-    room_no TEXT, checkin DATETIME, checkout DATETIME,
-    id_image_path TEXT, photo_path TEXT, status TEXT)''')
+    name TEXT,
+    phone TEXT,
+    address TEXT,
+    id_type TEXT,
+    id_number TEXT,
+    room_no TEXT,
+    checkin DATETIME,
+    checkout DATETIME,
+    id_image_path TEXT,
+    photo_path TEXT,
+    status TEXT
+)
+''')
 
-c.execute('''CREATE TABLE IF NOT EXISTS rooms (
-    room_no TEXT PRIMARY KEY, room_type TEXT, rate REAL, status TEXT)''')
+# Room setup table
+c.execute('''
+CREATE TABLE IF NOT EXISTS rooms (
+    room_no TEXT PRIMARY KEY,
+    room_type TEXT,
+    rate REAL,
+    status TEXT
+)
+''')
 
 conn.commit()
 
+# Create uploads directory
 os.makedirs("uploads/id_cards", exist_ok=True)
 os.makedirs("uploads/photos", exist_ok=True)
 
-USERS = {"admin": "admin123"}
+# ------------------ Authentication ------------------
+USERS = {"admin": "admin123", "staff": "guest123"}
 
 def login():
-    st.title("🔐 Lodge Login")
-    u = st.text_input("Username")
-    p = st.text_input("Password", type="password")
-    if st.button("Login"):
-        if USERS.get(u) == p:
+    st.sidebar.title("🔐 Login")
+    username = st.sidebar.text_input("Username")
+    password = st.sidebar.text_input("Password", type="password")
+    if st.sidebar.button("Login"):
+        if USERS.get(username) == password:
             st.session_state["auth"] = True
-            st.success("Login successful")
+            st.session_state["user"] = username
+            st.sidebar.success("Login successful!")
         else:
-            st.error("Invalid credentials")
+            st.sidebar.error("Invalid credentials")
 
-def dashboard():
-    st.header("📊 Dashboard")
-    total = c.execute("SELECT COUNT(*) FROM rooms").fetchone()[0]
-    occ = c.execute("SELECT COUNT(*) FROM rooms WHERE status='Occupied'").fetchone()[0]
-    today = c.execute("SELECT COUNT(*) FROM guests WHERE DATE(checkin)=DATE('now')").fetchone()[0]
-    a,b,c1 = st.columns(3)
-    a.metric("Total Rooms", total)
-    b.metric("Occupied", occ)
-    c1.metric("Today's Check-ins", today)
+def logout():
+    st.session_state["auth"] = False
+    st.session_state.pop("user", None)
 
-def rooms():
-    st.header("🏠 Rooms")
-    with st.form("room"):
-        r = st.text_input("Room No")
-        t = st.selectbox("Type", ["Single","Double"])
-        rate = st.number_input("Rate", min_value=0)
-        if st.form_submit_button("Add"):
-            c.execute("INSERT OR REPLACE INTO rooms VALUES (?,?,?,?)",(r,t,rate,"Available"))
+# ------------------ Room Management ------------------
+def room_management():
+    st.header("🏠 Room Management")
+    with st.form("add_room"):
+        col1, col2, col3 = st.columns(3)
+        room_no = col1.text_input("Room No")
+        room_type = col2.selectbox("Room Type", ["Single", "Double", "Deluxe"])
+        rate = col3.number_input("Rate (₹)", min_value=0.0)
+        if st.form_submit_button("Add Room"):
+            c.execute("INSERT OR REPLACE INTO rooms VALUES (?, ?, ?, ?)", 
+                      (room_no, room_type, rate, "Available"))
             conn.commit()
-            st.success("Added")
-    st.table(c.execute("SELECT * FROM rooms").fetchall())
+            st.success(f"Room {room_no} added/updated successfully")
 
-def checkin():
-    st.header("🧳 Check-In")
-    avail = c.execute("SELECT room_no FROM rooms WHERE status='Available'").fetchall()
-    if not avail:
-        st.warning("No rooms")
-        return
-    with st.form("ci"):
-        name = st.text_input("Name")
-        phone = st.text_input("Phone")
-        idt = st.selectbox("ID",["Aadhaar","Passport"])
-        idn = st.text_input("ID Number")
-        room = st.selectbox("Room",[r[0] for r in avail])
-        idimg = st.file_uploader("ID")
-        photo = st.file_uploader("Photo")
-        if st.form_submit_button("Check-In"):
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            ip, pp = None, None
-            if idimg:
-                ip=f"uploads/id_cards/{idimg.name}"
-                open(ip,"wb").write(idimg.getbuffer())
-            if photo:
-                pp=f"uploads/photos/{photo.name}"
-                open(pp,"wb").write(photo.getbuffer())
-            c.execute("INSERT INTO guests (name,phone,id_type,id_number,room_no,checkin,status,id_image_path,photo_path) VALUES (?,?,?,?,?,?,?,?,?)",
-                      (name,phone,idt,idn,room,now,"Checked-In",ip,pp))
-            c.execute("UPDATE rooms SET status='Occupied' WHERE room_no=?",(room,))
-            conn.commit()
-            st.success("Checked in")
+    st.subheader("All Rooms")
+    rooms = c.execute("SELECT * FROM rooms").fetchall()
+    if rooms:
+        st.table(rooms)
+    else:
+        st.info("No rooms found.")
 
-def checkout():
-    st.header("🚪 Checkout")
-    g = c.execute("SELECT id,name,room_no FROM guests WHERE status='Checked-In'").fetchall()
-    if not g:
-        st.info("No guests")
+# ------------------ Guest Check-In ------------------
+def guest_checkin():
+    st.header("🧳 Guest Check-In")
+
+    with st.form("checkin_form"):
+        name = st.text_input("Guest Name")
+        phone = st.text_input("Phone Number")
+        address = st.text_area("Address")
+        id_type = st.selectbox("ID Type", ["Aadhaar", "Passport", "Driving License", "Other"])
+        id_number = st.text_input("ID Number")
+        room_no = st.selectbox("Room No", [r[0] for r in c.execute("SELECT room_no FROM rooms WHERE status='Available'").fetchall()])
+        id_image = st.file_uploader("Upload ID Image", type=["jpg", "png", "jpeg"])
+        photo = st.file_uploader("Upload Guest Photo", type=["jpg", "png", "jpeg"])
+        submit = st.form_submit_button("Check-In Guest")
+
+        if submit:
+            if not all([name, phone, id_type, room_no]):
+                st.error("Please fill in all required fields.")
+            else:
+                id_image_path, photo_path = None, None
+                if id_image:
+                    id_image_path = f"uploads/id_cards/{name}_{id_image.name}"
+                    with open(id_image_path, "wb") as f:
+                        f.write(id_image.getbuffer())
+
+                if photo:
+                    photo_path = f"uploads/photos/{name}_{photo.name}"
+                    with open(photo_path, "wb") as f:
+                        f.write(photo.getbuffer())
+
+                checkin_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                c.execute('''INSERT INTO guests 
+                             (name, phone, address, id_type, id_number, room_no, checkin, status, id_image_path, photo_path)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', 
+                          (name, phone, address, id_type, id_number, room_no, checkin_time, "Checked-In", id_image_path, photo_path))
+                c.execute("UPDATE rooms SET status='Occupied' WHERE room_no=?", (room_no,))
+                conn.commit()
+                st.success(f"{name} checked in successfully!")
+
+# ------------------ Guest Register ------------------
+def guest_register():
+    st.header("📘 Digital Guest Register")
+    guests = c.execute("SELECT name, phone, room_no, checkin, checkout, status FROM guests ORDER BY checkin DESC").fetchall()
+    if guests:
+        st.table(guests)
+    else:
+        st.info("No guest records found.")
+
+# ------------------ Checkout ------------------
+def guest_checkout():
+    st.header("🚪 Guest Checkout")
+    checked_in_guests = c.execute("SELECT id, name, room_no FROM guests WHERE status='Checked-In'").fetchall()
+    if not checked_in_guests:
+        st.info("No guests currently checked-in.")
         return
-    sel = st.selectbox("Guest", g, format_func=lambda x: f"{x[1]} ({x[2]})")
-    if st.button("Checkout"):
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        c.execute("UPDATE guests SET checkout=?,status='Checked-Out' WHERE id=?",(now,sel[0]))
-        c.execute("UPDATE rooms SET status='Available' WHERE room_no=?",(sel[2],))
+
+    guest = st.selectbox("Select Guest", checked_in_guests, format_func=lambda x: f"{x[1]} (Room {x[2]})")
+    if st.button("Mark Checkout"):
+        checkout_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        c.execute("UPDATE guests SET checkout=?, status='Checked-Out' WHERE id=?", (checkout_time, guest[0]))
+        c.execute("UPDATE rooms SET status='Available' WHERE room_no=?", (guest[2],))
         conn.commit()
-        st.success("Done")
+        st.success(f"{guest[1]} checked out successfully!")
 
-def register():
-    st.header("📘 Register")
-    st.table(c.execute("SELECT name,phone,room_no,checkin,checkout,status FROM guests").fetchall())
-
+# ------------------ Main App ------------------
 def main():
-    st.set_page_config("Lodge App", layout="wide")
-    if "auth" not in st.session_state: st.session_state["auth"]=False
-    if not st.session_state["auth"]:
-        login(); return
-    m = st.sidebar.radio("Menu",["Dashboard","Check-In","Checkout","Register","Rooms"])
-    if m=="Dashboard": dashboard()
-    elif m=="Check-In": checkin()
-    elif m=="Checkout": checkout()
-    elif m=="Register": register()
-    elif m=="Rooms": rooms()
+    st.set_page_config(page_title="Lodge Digital Register", layout="wide")
+    st.title("🏨 Lodge & Guesthouse Digital Register")
 
-if __name__=="__main__":
+    if "auth" not in st.session_state or not st.session_state["auth"]:
+        login()
+        return
+    else:
+        st.sidebar.success(f"Logged in as {st.session_state['user']}")
+        if st.sidebar.button("Logout"):
+            logout()
+            st.experimental_rerun()
+
+    menu = st.sidebar.radio("Menu", ["Guest Check-In", "Guest Checkout", "Guest Register", "Room Management"])
+    if menu == "Guest Check-In":
+        guest_checkin()
+    elif menu == "Guest Checkout":
+        guest_checkout()
+    elif menu == "Guest Register":
+        guest_register()
+    elif menu == "Room Management":
+        room_management()
+
+if __name__ == "__main__":
     main()
